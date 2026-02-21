@@ -8,37 +8,29 @@ import './App.css';
 
 /* ❌ REMOVED PROCESSING_PHRASES UI BUTTONS (kept animation text only if backend-driven later) */
 
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import StreamingAvatar, {
+  AvatarQuality,
+  StreamingEvents,
+  TaskType,
+  VoiceEmotion,
+} from '@heygen/streaming-avatar';
+import { queryRAG, getAccessToken } from './lib/rag-client';
+import './App.css';
+
+// The Avatar ID the user requested to be hardcoded
+const HARDCODED_AVATAR_ID = '38c680e881ec441cab7b68d515237d3f';
+
 const ImmersiveMode = ({ userData, onExit }) => {
+  const videoRef = useRef(null);
+  const avatarRef = useRef(null);
   const [state, setState] = useState('idle'); // idle, listening, processing, speaking
-  const [messages, setMessages] = useState([]);
-  const [displayedSentences, setDisplayedSentences] = useState([]);
-  const [processingPhrases, setProcessingPhrases] = useState([]);
-  const [micPermissionDenied, setMicPermissionDenied] = useState(false);
-  const [orbVisible, setOrbVisible] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState(null);
   const [sessionTime, setSessionTime] = useState(0);
-
-  const { levelRef, ready, error: audioError, start: startAudio, stop: stopAudio } =
-    useAudioLevel();
-
-  const {
-    isListening,
-    transcript,
-    interimTranscript,
-    startListening,
-    stopListening,
-    resetTranscript
-  } = useSpeechRecognition();
-
-  const pauseTimerRef = useRef(null);
   const sessionTimerRef = useRef(null);
-  const PAUSE_THRESHOLD = 2000;
-
-  useEffect(() => {
-    const timer = setTimeout(() => setOrbVisible(true), 100);
-    return () => clearTimeout(timer);
-  }, []);
 
   // Track session time
   useEffect(() => {
@@ -49,181 +41,134 @@ const ImmersiveMode = ({ userData, onExit }) => {
     return () => clearInterval(sessionTimerRef.current);
   }, [state]);
 
-  useEffect(() => {
-    if (audioError) {
-      setMicPermissionDenied(true);
-      setError('Microphone access denied');
-    }
-  }, [audioError]);
-
-  useEffect(() => {
-    if (state !== 'listening') return;
-    if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
-
-    if (transcript?.trim()) {
-      pauseTimerRef.current = setTimeout(handleDoneSpeaking, PAUSE_THRESHOLD);
-    }
-
-    return () => pauseTimerRef.current && clearTimeout(pauseTimerRef.current);
-  }, [transcript, state]);
-
-  const handleStart = async () => {
-    try {
-      setMicPermissionDenied(false);
-      setError(null);
-      setSessionTime(0);
-      await startAudio();
-
-      // Fetch greeting from backend
-      setState('processing');
-      const res = await fetch('http://localhost:8000/api/greeting', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userName: userData?.name || '' })
-      });
-
-      let greeting;
-      if (res.ok) {
-        const data = await res.json();
-        greeting = data.greeting;
-      } else {
-        // Fallback only if backend is unreachable
-        greeting = `Hi${userData?.name ? ` ${userData.name}` : ''}. I'm here with you. When you're ready, just start speaking.`;
-      }
-
-      setMessages([{ role: 'assistant', content: greeting }]);
-      setState('speaking');
-      speakResponse(greeting);
-    } catch (err) {
-      setMicPermissionDenied(true);
-      setError('Unable to access microphone. Please check permissions.');
-    }
-  };
-
-  const handleDoneSpeaking = async () => {
-    if (pauseTimerRef.current) {
-      clearTimeout(pauseTimerRef.current);
-    }
-
-    stopAudio();
-    stopListening();
-
-    if (!transcript?.trim()) {
-      setError('No speech detected. Please try speaking again.');
-      setTimeout(() => setError(null), 3000);
-      setState('listening');
-      startAudio();
-      startListening();
-      return;
-    }
-
-    setState('processing');
-    setIsSubmitting(true);
+  const handleStart = useCallback(async () => {
+    if (isInitializing || isInitialized) return;
+    setIsInitializing(true);
     setError(null);
+    setSessionTime(0);
 
     try {
-      const res = await fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: transcript,
-          history: messages.slice(-5),
-          riskLevel: userData?.riskLevel || 'unknown'
-        })
+      // 1. Fetch streaming token from our unified backend
+      const token = await getAccessToken();
+
+      // 2. Create avatar instance
+      const avatar = new StreamingAvatar({ token });
+      avatarRef.current = avatar;
+
+      // 3. Set up event listeners
+      avatar.on(StreamingEvents.STREAM_READY, (event) => {
+        if (videoRef.current && event.detail) {
+          videoRef.current.srcObject = event.detail;
+          videoRef.current.play().catch(() => {});
+        }
+        setIsInitialized(true);
+        setIsInitializing(false);
       });
 
-      if (!res.ok) {
-        throw new Error(`Server error: ${res.status}`);
-      }
+      avatar.on(StreamingEvents.AVATAR_START_TALKING, () => {
+        setState('speaking');
+      });
 
-      const data = await res.json();
-      
-      if (!data.response || !data.response.trim()) {
-        throw new Error('Empty response from server');
-      }
+      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
+        setState('listening');
+      });
 
-      setMessages(prev => [
-        ...prev,
-        { role: 'user', content: transcript },
-        { role: 'assistant', content: data.response, sources: data.sources }
-      ]);
+      avatar.on(StreamingEvents.USER_START, () => {
+        setState('listening');
+      });
 
-      setState('speaking');
-      speakResponse(data.response);
-    } catch (err) {
-      console.error('API Error:', err);
-      setError(err.message || 'Unable to connect to the server.');
-      setState('listening');
-      startListening();
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+      avatar.on(StreamingEvents.USER_STOP, () => {
+        setState('processing');
+      });
 
-  const speakResponse = text => {
-    setDisplayedSentences([text]);
+      // 4. Handle user's transcribed speech (Send to RAG!)
+      avatar.on(StreamingEvents.USER_END_MESSAGE, async (event) => {
+        const transcript = event?.detail?.message || '';
+        if (!transcript.trim()) return;
 
-    if ('speechSynthesis' in window) {
-      const speakWithVoice = () => {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.9;
-        utterance.pitch = 1;
+        setState('processing');
 
-        const voices = window.speechSynthesis.getVoices();
-        const preferredVoice = voices.find(v =>
-          v.name.includes('Google') || v.name.includes('Samantha')
-        );
-        if (preferredVoice) utterance.voice = preferredVoice;
+        try {
+          // Send transcript to our local FastAPI LangGraph RAG
+          const ragData = await queryRAG(transcript, []);
+          
+          if (ragData && ragData.spoken_answer) {
+            await avatar.speak({
+              text: ragData.spoken_answer,
+              taskType: TaskType.REPEAT,
+            });
+          }
+        } catch (apiErr) {
+          console.error('RAG Error:', apiErr);
+          await avatar.speak({
+            text: "I'm having trouble connecting to my knowledge base right now. Could you ask me again?",
+            taskType: TaskType.REPEAT,
+          });
+        }
+      });
 
-        utterance.onend = () => {
-          setState('listening');
-          startListening();
-          resetTranscript();
-        };
+      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
+        handleExit();
+      });
 
-        utterance.onerror = err => {
-          console.error('TTS Error:', err);
-          setState('listening');
-          startListening();
-          resetTranscript();
-        };
-
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
+      // 5. Start the session using HeyGen v2 SDK methods
+      const startConfig = {
+        quality: AvatarQuality.Medium,
+        avatarName: HARDCODED_AVATAR_ID,
+        language: 'en',
       };
 
-      if (window.speechSynthesis.getVoices().length > 0) {
-        speakWithVoice();
-      } else {
-        window.speechSynthesis.onvoiceschanged = speakWithVoice;
-      }
-    } else {
-      setTimeout(() => {
-        setState('listening');
-        startListening();
-        resetTranscript();
-      }, text.length * 50);
+      await avatar.newSession(startConfig);
+      await avatar.startSession();
+
+      // Send initial greeting through RAG or just speak it
+      const greeting = `Hi${userData?.name ? ` ${userData.name}` : ''}. I'm here with you. What would you like to talk about today?`;
+      await avatar.speak({
+        text: greeting,
+        taskType: TaskType.REPEAT,
+      });
+
+    } catch (err) {
+      console.error('Avatar init error:', err);
+      setError('Unable to start the avatar session. ' + (err.message || ''));
+      setIsInitializing(false);
     }
-  };
+  }, [isInitializing, isInitialized, userData]);
 
   const handleExit = () => {
-    if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
     if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
-    stopAudio();
-    stopListening();
-    window.speechSynthesis?.cancel();
+    if (avatarRef.current) {
+      avatarRef.current.stopAvatar().catch(() => {});
+      avatarRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setState('idle');
+    setIsInitialized(false);
     onExit?.();
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (avatarRef.current) {
+        avatarRef.current.stopAvatar().catch(() => {});
+      }
+    };
+  }, []);
 
   return (
     <div className="immersive-container">
 
       {/* TOP BAR: SESSION TIME + EXIT */}
-      <div className="immersive-top-bar">
-        <div className="session-timer">
-          {String(Math.floor(sessionTime / 60)).padStart(2, '0')}:
-          {String(sessionTime % 60).padStart(2, '0')}
-        </div>
+      <div className="immersive-top-bar" style={{ zIndex: 10 }}>
+        {isInitialized && (
+          <div className="session-timer">
+            {String(Math.floor(sessionTime / 60)).padStart(2, '0')}:
+            {String(sessionTime % 60).padStart(2, '0')}
+          </div>
+        )}
         <motion.button 
           className="immersive-exit" 
           onClick={handleExit}
@@ -243,6 +188,7 @@ const ImmersiveMode = ({ userData, onExit }) => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.3 }}
+            style={{ position: 'absolute', top: 80, zIndex: 20 }}
           >
             <span className="error-icon">⚠</span>
             {error}
@@ -250,94 +196,86 @@ const ImmersiveMode = ({ userData, onExit }) => {
         )}
       </AnimatePresence>
 
-      {/* ORB */}
-      <div className="immersive-orb-container">
-        <AnimatePresence>
-          {orbVisible && (
-            <motion.div className="orb-pop-wrapper">
-              <JarvisOrb levelRef={levelRef} mode={state} size={320} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* AVATAR VIDEO CONTAINER */}
+      <div style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#0a0a0f',
+          overflow: 'hidden'
+      }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            opacity: isInitialized ? 1 : 0,
+            transition: 'opacity 1s ease'
+          }}
+        />
+
+        {/* LOADING OR START UI */}
+        {!isInitialized && (
+          <div className="center-column" style={{ position: 'absolute', zIndex: 5 }}>
+            {isInitializing ? (
+               <motion.div 
+                 className="processing-state"
+                 initial={{ opacity: 0 }}
+                 animate={{ opacity: 1 }}
+               >
+                 <div className="processing-spinner"></div>
+                 <p>Connecting to Avatar...</p>
+               </motion.div>
+            ) : (
+              <motion.button 
+                className="btn-start-therapy" 
+                onClick={handleStart}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                Start Immersive Therapy
+              </motion.button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* SUBTITLE */}
+      {/* PROCESSING STATE OVERLAY */}
       <AnimatePresence>
-        {state === 'speaking' && (
-          <motion.div className="immersive-response">
-            <p className="response-sentence">{displayedSentences[0]}</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* PROCESSING STATE */}
-      <AnimatePresence>
-        {state === 'processing' && (
+        {state === 'processing' && isInitialized && (
           <motion.div 
             className="processing-state"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            style={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 10 }}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
           >
             <div className="processing-spinner"></div>
             <p>Thinking…</p>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* START */}
-      {state === 'idle' && (
-        <div className="center-column">
-          {(micPermissionDenied || audioError) && (
-            <motion.div 
-              className="permission-error"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              <p>🎤 Microphone access required</p>
-              <p style={{ fontSize: '0.9rem', marginTop: '8px' }}>
-                Please enable microphone permissions in your browser settings.
-              </p>
-            </motion.div>
-          )}
-          <motion.button 
-            className="btn-start-therapy" 
-            onClick={handleStart}
-            disabled={micPermissionDenied}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
+      
+      {/* LISTENING INDICATOR */}
+      <AnimatePresence>
+        {state === 'listening' && isInitialized && (
+          <motion.div 
+            style={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', zIndex: 10, background: 'rgba(99, 102, 241, 0.2)', padding: '10px 20px', borderRadius: '30px', color: '#818cf8', fontWeight: 'bold' }}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
           >
-            {micPermissionDenied ? 'Enable Microphone' : 'Start Therapy Session'}
-          </motion.button>
-        </div>
-      )}
+            <span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#818cf8', borderRadius: '50%', marginRight: '10px', animation: 'pulse 1.5s infinite' }}></span>
+            Listening...
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* LISTENING */}
-      {state === 'listening' && (
-        <div className="center-column">
-          <p className="listening-prompt">Speak freely…</p>
-
-          <div className="transcript-display">
-            {interimTranscript || transcript || 'Listening…'}
-          </div>
-
-          <motion.button 
-            className="btn-done-speaking" 
-            onClick={handleDoneSpeaking}
-            disabled={isSubmitting}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            {isSubmitting ? 'Processing...' : 'Submit (or pause 2s)'}
-          </motion.button>
-        </div>
-      )}
-
-      {userData?.name && state !== 'idle' && (
-        <div className="immersive-greeting">
-          Welcome back, {userData.name}
-        </div>
-      )}
     </div>
   );
 };

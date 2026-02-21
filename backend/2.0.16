@@ -1,8 +1,0 @@
-Defaulting to user installation because normal site-packages is not writeable
-Collecting sqlalchemy
-  Using cached sqlalchemy-2.0.45-cp312-cp312-win_amd64.whl.metadata (9.8 kB)
-Requirement already satisfied: greenlet>=1 in c:\users\app27\appdata\roaming\python\python312\site-packages (from sqlalchemy) (3.1.1)
-Requirement already satisfied: typing-extensions>=4.6.0 in c:\users\app27\appdata\roaming\python\python312\site-packages (from sqlalchemy) (4.15.0)
-Using cached sqlalchemy-2.0.45-cp312-cp312-win_amd64.whl (2.1 MB)
-Installing collected packages: sqlalchemy
-Successfully installed sqlalchemy-2.0.45
