@@ -38,14 +38,15 @@ function App() {
 
   useEffect(() => {
     try {
-      const savedUserData = localStorage.getItem('apli_user_data');
-      const vibeCheckStatus = localStorage.getItem('apli_vibe_check_completed');
+      const savedUserData = localStorage.getItem('apli_safe_user_data');
+      const vibeCheckStatus = sessionStorage.getItem('apli_vibe_check_completed');
       
       if (savedUserData) {
         const parsed = JSON.parse(savedUserData);
         setUserData(parsed);
         setIsOnboarded(true);
-        setRiskLevel(parsed.riskLevel || 'unknown');
+        // Risk level is no longer pulled from persistent insecure storage
+        setRiskLevel('unknown'); 
       }
 
       if (vibeCheckStatus === 'true') {
@@ -54,6 +55,7 @@ function App() {
     } catch (error) {
       console.error('Error loading state:', error);
       localStorage.clear();
+      sessionStorage.clear();
     } finally {
       setIsLoading(false);
     }
@@ -62,11 +64,13 @@ function App() {
   const handleOnboardingComplete = useCallback((data) => {
     setUserData(data);
     setIsOnboarded(true);
-    localStorage.setItem('apli_user_data', JSON.stringify(data));
+    // Only store safe demographic data, not clinical
+    const safeData = { name: data.name, id: data.id || 'anonymous' };
+    localStorage.setItem('apli_safe_user_data', JSON.stringify(safeData));
   }, []);
 
   const handleVibeCheckComplete = useCallback((report) => {
-    localStorage.setItem('apli_vibe_check_completed', 'true');
+    sessionStorage.setItem('apli_vibe_check_completed', 'true');
     setVibeCheckCompleted(true);
     
     const risk = report.severityScore >= 7 ? 'high' : 'low';
@@ -79,7 +83,11 @@ function App() {
         riskLevel: risk,
         lastCheck: new Date().toISOString()
       };
-      localStorage.setItem('apli_user_data', JSON.stringify(updated));
+      
+      // Sync safe data only, PHI stays in RAM
+      const safeData = { name: updated.name, id: updated.id };
+      localStorage.setItem('apli_safe_user_data', JSON.stringify(safeData));
+      
       return updated;
     });
   }, []);

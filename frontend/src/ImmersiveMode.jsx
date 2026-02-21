@@ -1,12 +1,3 @@
-// SAME IMPORTS AS BEFORE
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import JarvisOrb from './components/JarvisOrb';
-import useAudioLevel from './hooks/useAudioLevel';
-import useSpeechRecognition from './hooks/useSpeechRecognition';
-import './App.css';
-
-/* ❌ REMOVED PROCESSING_PHRASES UI BUTTONS (kept animation text only if backend-driven later) */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';

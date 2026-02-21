@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "prompts", "therapist_system.txt")
 
+_rag_semaphore = asyncio.Semaphore(4)
+
 
 class CouncilState(TypedDict):
     user_id: str
@@ -59,6 +61,7 @@ class TherapistCouncil:
         self.tts = DeepgramTTSStreamer()
         self._current_generation_task = None
         self._system_prompt = self._load_system_prompt()
+        self._background_tasks = set()
 
         # Build LangGraph
         builder = StateGraph(CouncilState)
@@ -138,8 +141,9 @@ class TherapistCouncil:
                         )
                     )
 
-                    # RAG retrieval from FAISS (runs in thread to not block)
-                    rag_docs = await asyncio.to_thread(rag_retrieve, text, 3)
+                    # RAG retrieval from FAISS (runs in thread to not block, bounded by semaphore)
+                    async with _rag_semaphore:
+                        rag_docs = await asyncio.to_thread(rag_retrieve, text, 3)
 
                     state = CouncilState(
                         user_id=self.session.user_id,
@@ -163,6 +167,10 @@ class TherapistCouncil:
                     )
         finally:
             asr_task.cancel()
+            if self._current_generation_task:
+                self._current_generation_task.cancel()
+            if memory_prefetch_task:
+                memory_prefetch_task.cancel()
 
     async def _run_generation(self, state: CouncilState, tts_audio_queue):
         """Run the full generation pipeline: context → empathy+TTS → memory."""
@@ -283,7 +291,9 @@ class TherapistCouncil:
             "timestamp": time.time(),
             "behavioral_context": state.get("behavioral_summary"),
         }
-        asyncio.create_task(memory_service.save_turn(turn))
+        task = asyncio.create_task(memory_service.save_turn(turn))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         self.session.history.append(
             {"role": "user", "content": state["current_transcript"]}
