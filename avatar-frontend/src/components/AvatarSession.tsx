@@ -1,26 +1,19 @@
 /**
- * AvatarSession — Core component managing HeyGen LiveAvatar lifecycle.
- * Uses CUSTOM mode: LiveAvatar handles avatar rendering (WebRTC/LiveKit),
- * while our backend provides STT, LLM, and TTS.
+ * AvatarSession — HeyGen LiveAvatar embed with RAG integration.
+ * The avatar renders via HeyGen's hosted embed (voice chat built-in).
+ * RAG queries are sent to the backend for clinical knowledge retrieval.
  */
 'use client';
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { LiveAvatarSession } from '@heygen/liveavatar-web-sdk';
-import { getAccessToken } from '@/lib/rag-client';
+import React, { useState, useCallback } from 'react';
 import { useConversation } from '@/hooks/useConversation';
 import VoiceStatus from '@/components/VoiceStatus';
 import CitationsPanel from '@/components/CitationsPanel';
 
-const FALLBACK_MESSAGE = "I'm having trouble retrieving that information right now. Could you try again?";
+const EMBED_URL = 'https://embed.liveavatar.com/v1/3b78f84a-fab6-4591-9baa-f2ebfecf9f7a';
 
 export default function AvatarSession() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const sessionRef = useRef<LiveAvatarSession | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
-  const [avatarId, setAvatarId] = useState<string>('513fd1b7-7ef9-466d-9af2-344e51eeb833');
-  const [isInitializing, setIsInitializing] = useState(false);
-  const [initError, setInitError] = useState<string | null>(null);
 
   const {
     state,
@@ -34,131 +27,35 @@ export default function AvatarSession() {
     resetConversation,
   } = useConversation();
 
-  /**
-   * Initialize the LiveAvatar session (CUSTOM mode).
-   */
-  const initializeAvatar = useCallback(async () => {
-    if (isInitializing || isInitialized) return;
-    if (!avatarId.trim()) {
-      setInitError("Please enter a valid Avatar ID.");
-      return;
-    }
-    
-    setIsInitializing(true);
-    setInitError(null);
+  const startSession = useCallback(() => {
+    setIsInitialized(true);
+    setState('idle');
+  }, [setState]);
 
-    try {
-      // 1. Fetch LiveAvatar session token from backend
-      const tokenData = await getAccessToken();
-      console.log('[LiveAvatar] Session token received');
-
-      // 2. Create LiveAvatar session with CUSTOM config
-      const session = new LiveAvatarSession(tokenData, {
-        voiceChat: true,
-      });
-      sessionRef.current = session;
-
-      // 3. Start the session — renders the avatar via LiveKit WebRTC
-      await session.start();
-      console.log('[LiveAvatar] Session started successfully');
-
-      setIsInitialized(true);
-      setIsInitializing(false);
-
-    } catch (err: unknown) {
-      console.error('[LiveAvatar] Initialization failed:', err);
-
-      let userFriendlyError = 'Failed to connect to the avatar service. Please try again.';
-
-      if (err instanceof Error) {
-        if (err.message.includes('401') || err.message.toLowerCase().includes('token')) {
-          userFriendlyError = 'Authentication failed. Please check your API keys.';
-        } else if (err.message.includes('Network') || err.message.includes('fetch')) {
-          userFriendlyError = 'Network connection lost. Please check your internet.';
-        } else if (
-          err.message.toLowerCase().includes('not found') ||
-          err.message.toLowerCase().includes('invalid avatar')
-        ) {
-          userFriendlyError = 'The provided Avatar ID is invalid or unavailable.';
-        }
-      }
-
-      setInitError(userFriendlyError);
-      setIsInitializing(false);
-    }
-  }, [isInitializing, isInitialized, avatarId, setState, sendQuery]);
-
-  /**
-   * End the avatar session.
-   */
-  const endSession = useCallback(async () => {
-    if (sessionRef.current) {
-      await sessionRef.current.stop();
-      sessionRef.current = null;
-    }
+  const endSession = useCallback(() => {
     setIsInitialized(false);
     setState('idle');
     resetConversation();
   }, [setState, resetConversation]);
 
-  useEffect(() => {
-    return () => {
-      if (sessionRef.current) {
-        sessionRef.current.stop().catch((err: unknown) => {
-          console.error('[LiveAvatar] Failed to stop session on cleanup:', err);
-        });
-      }
-    };
-  }, []);
-
   return (
     <div className="avatar-session">
-      {/* LiveAvatar renders into this container via LiveKit WebRTC */}
-      <div className="avatar-video-container" ref={containerRef}>
-        {!isInitialized && (
+      <div className="avatar-video-container">
+        {isInitialized ? (
+          <iframe
+            src={EMBED_URL}
+            allow="microphone; camera"
+            title="LiveAvatar Therapist"
+            className="avatar-embed"
+          />
+        ) : (
           <div className="avatar-placeholder">
-            {isInitializing ? (
-              <>
-                <div className="loading-spinner" />
-                <p>Initializing avatar...</p>
-              </>
-            ) : initError ? (
-              <>
-                <p className="error-text">{initError}</p>
-                <div className="config-inputs">
-                  <input
-                    type="text"
-                    placeholder="Avatar ID (required)"
-                    value={avatarId}
-                    onChange={(e) => setAvatarId(e.target.value)}
-                    className="config-input"
-                  />
-                </div>
-                <button onClick={initializeAvatar} className="btn-retry" disabled={!avatarId.trim()}>
-                  Retry
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="avatar-icon">🎙️</div>
-                <h2>Voice-First RAG Avatar</h2>
-                <p>Speak naturally — the avatar will respond using clinical knowledge.</p>
-                
-                <div className="config-inputs">
-                  <input
-                    type="text"
-                    placeholder="Avatar ID"
-                    value={avatarId}
-                    onChange={(e) => setAvatarId(e.target.value)}
-                    className="config-input"
-                  />
-                </div>
-
-                <button onClick={initializeAvatar} className="btn-start" disabled={!avatarId.trim()}>
-                  Start Session
-                </button>
-              </>
-            )}
+            <div className="avatar-icon">🎙️</div>
+            <h2>Voice-First RAG Avatar</h2>
+            <p>Speak naturally — the avatar will respond using clinical knowledge.</p>
+            <button onClick={startSession} className="btn-start">
+              Start Session
+            </button>
           </div>
         )}
       </div>
@@ -218,36 +115,10 @@ export default function AvatarSession() {
           box-shadow: 0 0 40px rgba(99, 102, 241, 0.1);
         }
 
-        .avatar-video {
+        .avatar-embed {
           width: 100%;
           height: 100%;
-          object-fit: cover;
-        }
-
-        .autoplay-overlay {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(0, 0, 0, 0.65);
-          cursor: pointer;
-          z-index: 10;
-        }
-
-        .autoplay-overlay-inner {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-          color: #e2e8f0;
-          font-size: 18px;
-          font-weight: 600;
-          text-align: center;
-          padding: 24px 32px;
-          border-radius: 16px;
-          border: 1px solid rgba(99, 102, 241, 0.5);
-          background: rgba(15, 15, 26, 0.9);
+          border: none;
         }
 
         .avatar-placeholder {
@@ -282,7 +153,7 @@ export default function AvatarSession() {
           max-width: 320px;
         }
 
-        .btn-start, .btn-retry {
+        .btn-start {
           padding: 12px 32px;
           border: none;
           border-radius: 12px;
@@ -294,7 +165,7 @@ export default function AvatarSession() {
           color: white;
         }
 
-        .btn-start:hover, .btn-retry:hover {
+        .btn-start:hover {
           transform: translateY(-2px);
           box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
         }
@@ -347,19 +218,6 @@ export default function AvatarSession() {
           padding: 0 4px;
         }
 
-        .error-text {
-          color: #fca5a5;
-        }
-
-        .loading-spinner {
-          width: 32px;
-          height: 32px;
-          border: 3px solid rgba(99, 102, 241, 0.2);
-          border-top-color: #6366f1;
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-        }
-
         .council-badge {
           display: flex;
           align-items: center;
@@ -387,6 +245,15 @@ export default function AvatarSession() {
         .council-modality {
           font-size: 12px;
           color: #64748b;
+        }
+
+        .loading-spinner {
+          width: 32px;
+          height: 32px;
+          border: 3px solid rgba(99, 102, 241, 0.2);
+          border-top-color: #6366f1;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
         }
 
         @keyframes spin {
