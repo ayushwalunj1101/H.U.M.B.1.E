@@ -83,8 +83,20 @@ async def get_access_token(req: SessionTokenRequest = SessionTokenRequest()):
                 response.raise_for_status()
                 data = response.json()
 
-                session_token = data.get("session_token")
-                session_id = data.get("session_id")
+                # Debug: log full response to find the correct field
+                logger.info(f"LiveAvatar API response: {data}")
+
+                # Try multiple response formats
+                session_token = (
+                    data.get("session_token")
+                    or data.get("data", {}).get("session_token")
+                    or data.get("token")
+                    or data.get("data", {}).get("token")
+                )
+                session_id = (
+                    data.get("session_id")
+                    or data.get("data", {}).get("session_id")
+                )
 
                 if not session_token:
                     raise HTTPException(
