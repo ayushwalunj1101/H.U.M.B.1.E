@@ -7,11 +7,13 @@ import asyncio
 import time
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Optional
 from services import memory_service
 from audio.asr_streamer import DeepgramASRStreamer
 from audio.tts_streamer import DeepgramTTSStreamer
+from audio.tts_chunker import TTSChunker
 from turn_manager import TurnManager
 from rag.retrieval import retrieve as rag_retrieve
 from rag.citation_formatter import format_citations
@@ -19,9 +21,6 @@ from config import (
     VOICE_LLM_MODEL,
     VOICE_LLM_TEMPERATURE,
     VOICE_LLM_MAX_TOKENS,
-    FIRST_FLUSH_WORDS,
-    STEADY_FLUSH_WORDS,
-    DEADLINE_FLUSH_MS,
     MAX_HISTORY_TURNS,
     HISTORY_TRIM_TO,
 )
@@ -30,7 +29,10 @@ logger = logging.getLogger(__name__)
 
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "prompts", "therapist_system.txt")
 
-_rag_semaphore = asyncio.Semaphore(4)
+# Dedicated thread pool for FAISS retrieval — sized to CPU count, not hardcoded
+# Replaces the old Semaphore(4) + asyncio.to_thread pattern
+_rag_executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4, thread_name_prefix="rag")
+RAG_TIMEOUT_SECONDS = 5.0  # Prevent queue starvation under load
 
 
 class CouncilState(TypedDict):
@@ -52,6 +54,12 @@ class TherapistCouncil:
     """
     Orchestrates the full voice therapy session.
     Enhanced with RAG retrieval from FAISS alongside MongoDB memories.
+
+    Refactored from monolithic God Object:
+    - TTS chunking logic extracted to audio.tts_chunker.TTSChunker
+    - FAISS retrieval uses dedicated ThreadPoolExecutor with timeout
+    - String concatenation uses list + join pattern
+    - Orphaned async tasks are properly cancelled
     """
 
     def __init__(self, session):
@@ -132,6 +140,12 @@ class TherapistCouncil:
                                 memory_prefetch_task, timeout=0.05
                             )
                         except asyncio.TimeoutError:
+                            # Cancel the timed-out task to prevent it from leaking
+                            memory_prefetch_task.cancel()
+                            try:
+                                await memory_prefetch_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
                             memories = []
                         memory_prefetch_task = None
 
@@ -141,9 +155,17 @@ class TherapistCouncil:
                         )
                     )
 
-                    # RAG retrieval from FAISS (runs in thread to not block, bounded by semaphore)
-                    async with _rag_semaphore:
-                        rag_docs = await asyncio.to_thread(rag_retrieve, text, 3)
+                    # RAG retrieval from FAISS — dedicated executor with timeout
+                    # TODO: Migrate to async-native vector DB (Qdrant/Milvus) for true non-blocking
+                    loop = asyncio.get_running_loop()
+                    try:
+                        rag_docs = await asyncio.wait_for(
+                            loop.run_in_executor(_rag_executor, rag_retrieve, text, 3),
+                            timeout=RAG_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("FAISS retrieval timed out, proceeding without RAG docs")
+                        rag_docs = []
 
                     state = CouncilState(
                         user_id=self.session.user_id,
@@ -171,6 +193,9 @@ class TherapistCouncil:
                 self._current_generation_task.cancel()
             if memory_prefetch_task:
                 memory_prefetch_task.cancel()
+            # Wait for all background tasks to complete
+            if self._background_tasks:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
     async def _run_generation(self, state: CouncilState, tts_audio_queue):
         """Run the full generation pipeline: context → empathy+TTS → memory."""
@@ -221,10 +246,10 @@ class TherapistCouncil:
         system_prompt = self._build_system_prompt(state)
         messages = self._build_messages(state, system_prompt)
 
-        chunk_buffer = ""
-        full_response = ""
-        is_first_chunk = True
-        last_flush = time.monotonic()
+        # Use TTSChunker for clean, testable flush logic
+        chunker = TTSChunker()
+        # Collect tokens in a list — avoids O(n²) string concatenation
+        response_tokens: list[str] = []
 
         await self.session.set_speaking(True)
 
@@ -245,30 +270,19 @@ class TherapistCouncil:
                 if not token:
                     continue
 
-                full_response += token
-                chunk_buffer += token
-                elapsed_ms = (time.monotonic() - last_flush) * 1000
-                word_count = len(chunk_buffer.split())
+                response_tokens.append(token)
+                flush_text = chunker.feed(token)
 
-                is_sentence_end = any(p in token for p in {".", "!", "?"})
-                flush = (
-                    (is_first_chunk and word_count >= FIRST_FLUSH_WORDS and is_sentence_end)
-                    or (is_first_chunk and word_count >= FIRST_FLUSH_WORDS + 4)
-                    or is_sentence_end
-                    or (not is_first_chunk and word_count >= STEADY_FLUSH_WORDS)
-                    or elapsed_ms >= DEADLINE_FLUSH_MS
-                )
+                if flush_text:
+                    await self._speak_chunk(flush_text, tts_audio_queue)
 
-                if flush and chunk_buffer.strip():
-                    await self._speak_chunk(chunk_buffer, tts_audio_queue)
-                    chunk_buffer = ""
-                    last_flush = time.monotonic()
-                    is_first_chunk = False
+            # Flush remaining buffer
+            if not self.session.is_interrupted:
+                remaining = chunker.flush()
+                if remaining:
+                    await self._speak_chunk(remaining, tts_audio_queue)
 
-            if chunk_buffer.strip() and not self.session.is_interrupted:
-                await self._speak_chunk(chunk_buffer, tts_audio_queue)
-
-            state["response_text"] = full_response
+            state["response_text"] = "".join(response_tokens)
 
         finally:
             await self.session.set_speaking(False)
@@ -307,7 +321,6 @@ class TherapistCouncil:
 
     async def _empathy_node_graph(self, state: CouncilState) -> CouncilState:
         """Empathy node for graph-only mode (non-streaming)."""
-        # Simplified version for graph-only use
         from services.singletons import get_groq
         groq_client = get_groq()
 
@@ -346,3 +359,4 @@ class TherapistCouncil:
                 queue.task_done()
             except asyncio.QueueEmpty:
                 break
+

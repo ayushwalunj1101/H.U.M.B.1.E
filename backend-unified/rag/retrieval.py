@@ -5,16 +5,15 @@ Lifted from backend/vectorstore.py + backend/chunking.py
 """
 import os
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from tqdm import tqdm
-from config import GEMINI_API_KEY
 
-# Embeddings (Gemini Text Embeddings)
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=GEMINI_API_KEY
+# Local embeddings (runs on GPU — RTX 3050)
+embeddings = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2",
+    model_kwargs={"device": "cuda"},
 )
 
 # Paths — local to backend-unified

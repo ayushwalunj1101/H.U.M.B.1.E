@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/AppContext';
+import { buildAssessmentReport } from '@/lib/scoring';
 
 const PHQ9 = [
   "Feeling down, depressed, or hopeless?",
@@ -67,31 +68,13 @@ export default function Assessment({ userData, onComplete }: AssessmentProps) {
   };
 
   const submit = () => {
-    const score = answers.reduce((a: number, b) => a + (b ?? 0), 0) as number;
-    const severity =
-      score <= 4  ? 'Minimal' :
-      score <= 9  ? 'Mild' :
-      score <= 14 ? 'Moderate' : 'Severe';
-    const report = {
-      severityScore: score, severity,
-      primaryState: score <= 4 ? 'Stable' : score <= 9 ? 'Monitoring' : 'Support Needed',
-      timestamp: new Date().toISOString(),
-      answers,
-      clinicalDetails: {
-        primaryConcerns: `PHQ-9 score of ${score} indicating ${severity.toLowerCase()} depressive symptoms.`,
-        keyThemes: severity === 'Minimal' ? ['General wellbeing', 'Resilience'] : ['Mood', 'Sleep', 'Energy', 'Concentration'],
-        riskFactors: severity === 'Severe' ? ['Significant functional impairment', 'Needs immediate clinical attention'] : [],
-        recommendations: score <= 4
-          ? ['Continue self-care practices', 'Regular check-ins']
-          : score <= 9
-          ? ['Consider counselling', 'Lifestyle adjustments', 'Monitor closely']
-          : ['Professional therapeutic support', 'Clinical consultation recommended', 'Consider tele-MANAS 14416'],
-      },
-    };
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('apli_assessment_report', JSON.stringify(report));
-    }
-    handleVibeCheckComplete(severity.toLowerCase());
+    // Build report using centralized scoring utility — no magic numbers
+    const report = buildAssessmentReport(answers);
+
+    // SECURITY: Do NOT store PHI/clinical data in localStorage.
+    // Report is passed through React state (AppContext) only — never persisted client-side.
+
+    handleVibeCheckComplete(report);
     setSubmitted(true);
     if (onComplete) {
       onComplete(report);

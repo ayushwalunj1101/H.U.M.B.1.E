@@ -1,16 +1,12 @@
 /**
- * AvatarSession — Core component managing HeyGen Interactive Avatar lifecycle.
- * Handles: token fetch, session init, voice-chat events, RAG calls, avatar speak.
+ * AvatarSession — Core component managing HeyGen LiveAvatar lifecycle.
+ * Uses CUSTOM mode: LiveAvatar handles avatar rendering (WebRTC/LiveKit),
+ * while our backend provides STT, LLM, and TTS.
  */
 'use client';
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import StreamingAvatar, {
-  AvatarQuality,
-  StreamingEvents,
-  TaskType,
-  VoiceEmotion,
-} from '@heygen/streaming-avatar';
+import { LiveAvatarSession } from '@heygen/liveavatar-web-sdk';
 import { getAccessToken } from '@/lib/rag-client';
 import { useConversation } from '@/hooks/useConversation';
 import VoiceStatus from '@/components/VoiceStatus';
@@ -19,14 +15,12 @@ import CitationsPanel from '@/components/CitationsPanel';
 const FALLBACK_MESSAGE = "I'm having trouble retrieving that information right now. Could you try again?";
 
 export default function AvatarSession() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const avatarRef = useRef<StreamingAvatar | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const sessionRef = useRef<LiveAvatarSession | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
-  const [avatarId, setAvatarId] = useState<string>('38c680e881ec441cab7b68d515237d3f');
-  const [voiceId, setVoiceId] = useState<string>('');
+  const [avatarId, setAvatarId] = useState<string>('513fd1b7-7ef9-466d-9af2-344e51eeb833');
   const [isInitializing, setIsInitializing] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-  const [needsInteraction, setNeedsInteraction] = useState(false);
 
   const {
     state,
@@ -41,7 +35,7 @@ export default function AvatarSession() {
   } = useConversation();
 
   /**
-   * Initialize the HeyGen avatar session.
+   * Initialize the LiveAvatar session (CUSTOM mode).
    */
   const initializeAvatar = useCallback(async () => {
     if (isInitializing || isInitialized) return;
@@ -54,115 +48,25 @@ export default function AvatarSession() {
     setInitError(null);
 
     try {
-      // 1. Fetch streaming token
-      const token = await getAccessToken();
+      // 1. Fetch LiveAvatar session token from backend
+      const tokenData = await getAccessToken();
+      console.log('[LiveAvatar] Session token received');
 
-      // 2. Create avatar instance
-      const avatar = new StreamingAvatar({ token });
-      avatarRef.current = avatar;
-
-      // 3. Set up event listeners
-      avatar.on(StreamingEvents.STREAM_READY, async (event: any) => {
-        if (videoRef.current && event.detail) {
-          videoRef.current.srcObject = event.detail;
-          try {
-            await videoRef.current.play();
-          } catch (playError) {
-            if (playError instanceof DOMException && playError.name === 'NotAllowedError') {
-              // Browser autoplay policy blocked playback — ask the user to interact
-              setNeedsInteraction(true);
-            } else {
-              console.error('[AvatarService] Video playback failed:', playError);
-            }
-          }
-        }
-        setIsInitialized(true);
-        setIsInitializing(false);
+      // 2. Create LiveAvatar session with CUSTOM config
+      const session = new LiveAvatarSession(tokenData, {
+        voiceChat: true,
       });
+      sessionRef.current = session;
 
-      avatar.on(StreamingEvents.AVATAR_START_TALKING, () => {
-        setState('speaking');
-      });
+      // 3. Start the session — renders the avatar via LiveKit WebRTC
+      await session.start();
+      console.log('[LiveAvatar] Session started successfully');
 
-      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
-        setState('idle');
-      });
-
-      avatar.on(StreamingEvents.USER_START, () => {
-        setState('listening');
-      });
-
-      avatar.on(StreamingEvents.USER_STOP, () => {
-        // This is the critical trigger — user finished speaking
-        setState('processing');
-      });
-
-      // 4. Handle user's transcribed speech
-      avatar.on(StreamingEvents.USER_END_MESSAGE, async (event: any) => {
-        const transcript = event?.detail?.message || '';
-        if (!transcript.trim()) return;
-
-        setState('processing');
-
-        // Send to RAG backend
-        const spokenAnswer = await sendQuery(transcript);
-
-        if (spokenAnswer) {
-          // Command avatar to speak the response
-          try {
-            await avatar.speak({
-              text: spokenAnswer,
-              taskType: TaskType.REPEAT,
-            });
-          } catch (speakError) {
-            console.error('Avatar speak error:', speakError);
-            setState('idle');
-          }
-        } else {
-          // Fallback: speak a generic message
-          try {
-            await avatar.speak({
-              text: FALLBACK_MESSAGE,
-              taskType: TaskType.REPEAT,
-            });
-          } catch (speakError) {
-            console.error('[AvatarService] Failed to trigger fallback speech:', speakError);
-            setError('Lost connection to the avatar stream. Please try again.');
-            setState('idle');
-          }
-        }
-      });
-
-      avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
-        setIsInitialized(false);
-        setState('idle');
-      });
-
-      // 5. Start the session using the v2 SDK methods (newSession -> startSession)
-      let startConfig: any = {
-        quality: AvatarQuality.Medium,
-        avatarName: avatarId.trim(),
-        language: 'en',
-      };
-
-      if (voiceId.trim()) {
-        startConfig.voice = {
-          voiceId: voiceId.trim(),
-          rate: 1.0,
-          emotion: VoiceEmotion.FRIENDLY,
-        };
-      }
-
-      console.log('Creating new avatar session with config:', startConfig);
-      
-      const sessionData = await avatar.newSession(startConfig);
-      console.log("Session created successfully. Starting session...", sessionData);
-      
-      await avatar.startSession();
-      console.log("Avatar stream established.");
+      setIsInitialized(true);
+      setIsInitializing(false);
 
     } catch (err: unknown) {
-      console.error('[AvatarService] Initialization failed:', err); // Forward to Sentry/Datadog in production
+      console.error('[LiveAvatar] Initialization failed:', err);
 
       let userFriendlyError = 'Failed to connect to the avatar service. Please try again.';
 
@@ -182,59 +86,35 @@ export default function AvatarSession() {
       setInitError(userFriendlyError);
       setIsInitializing(false);
     }
-  }, [isInitializing, isInitialized, avatarId, voiceId, setState, sendQuery]);
+  }, [isInitializing, isInitialized, avatarId, setState, sendQuery]);
 
   /**
    * End the avatar session.
    */
   const endSession = useCallback(async () => {
-    if (avatarRef.current) {
-      await avatarRef.current.stopAvatar();
-      avatarRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    if (sessionRef.current) {
+      await sessionRef.current.stop();
+      sessionRef.current = null;
     }
     setIsInitialized(false);
     setState('idle');
     resetConversation();
   }, [setState, resetConversation]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (avatarRef.current) {
-        avatarRef.current.stopAvatar().catch(() => {});
+      if (sessionRef.current) {
+        sessionRef.current.stop().catch((err: unknown) => {
+          console.error('[LiveAvatar] Failed to stop session on cleanup:', err);
+        });
       }
     };
   }, []);
 
   return (
     <div className="avatar-session">
-      {/* Avatar Video */}
-      <div className="avatar-video-container">
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          className="avatar-video"
-        />
-
-        {/* Autoplay interaction overlay — shown when the browser blocks autoplay */}
-        {needsInteraction && (
-          <div
-            className="autoplay-overlay"
-            onClick={() => {
-              videoRef.current?.play().catch(() => {});
-              setNeedsInteraction(false);
-            }}
-          >
-            <div className="autoplay-overlay-inner">
-              <p>▶ Click anywhere to enable audio &amp; video</p>
-            </div>
-          </div>
-        )}
-
+      {/* LiveAvatar renders into this container via LiveKit WebRTC */}
+      <div className="avatar-video-container" ref={containerRef}>
         {!isInitialized && (
           <div className="avatar-placeholder">
             {isInitializing ? (
@@ -253,13 +133,6 @@ export default function AvatarSession() {
                     onChange={(e) => setAvatarId(e.target.value)}
                     className="config-input"
                   />
-                  <input
-                    type="text"
-                    placeholder="Voice ID (optional)"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
-                    className="config-input"
-                  />
                 </div>
                 <button onClick={initializeAvatar} className="btn-retry" disabled={!avatarId.trim()}>
                   Retry
@@ -274,16 +147,9 @@ export default function AvatarSession() {
                 <div className="config-inputs">
                   <input
                     type="text"
-                    placeholder="Avatar ID (e.g. Wayne_20240711)"
+                    placeholder="Avatar ID"
                     value={avatarId}
                     onChange={(e) => setAvatarId(e.target.value)}
-                    className="config-input"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Voice ID (optional)"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
                     className="config-input"
                   />
                 </div>

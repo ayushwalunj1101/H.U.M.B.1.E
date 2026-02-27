@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from agents.therapist_graph import TherapistCouncil
 from session import SessionContext
+from middleware.auth import ws_auth
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -16,11 +17,10 @@ logger = logging.getLogger(__name__)
 @router.websocket("/ws/voice/{user_id}")
 async def voice_endpoint(websocket: WebSocket, user_id: str, token: str = None):
     """Full-duplex voice WebSocket endpoint."""
-    # Basic simulated BOLA/IDOR protection (addressing review flag)
-    if not token or token != "simulated-jwt-token-123":
-        logger.warning(f"Unauthorized WebSocket access try: user={user_id}")
-        await websocket.close(code=1008, reason="Unauthorized")
-        return
+    # JWT validation (bypassed in dev mode when JWT_SECRET is default)
+    auth_payload = await ws_auth(websocket, token)
+    if auth_payload is None:
+        return  # ws_auth already closed the WebSocket with 1008
 
     await websocket.accept()
     logger.info(f"Voice session connected: user={user_id}")
@@ -79,3 +79,4 @@ async def voice_endpoint(websocket: WebSocket, user_id: str, token: str = None):
         await asyncio.gather(*tasks, return_exceptions=True)
         await session.cleanup()
         logger.info(f"Voice session ended: user={user_id}")
+

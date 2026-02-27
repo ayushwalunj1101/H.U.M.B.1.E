@@ -48,3 +48,14 @@ HISTORY_TRIM_TO = 14
 
 # ── Server ──
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+
+# ── Authentication ──
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_ALGORITHM = "HS256"
+
+# ── Rate Limiting ──
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+
+# ── Redis (future session state) ──
+REDIS_URL = os.getenv("REDIS_URL", "")

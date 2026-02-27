@@ -54,9 +54,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (vibeCheckStatus === 'true') {
         setVibeCheckCompleted(true);
       }
-    } catch {
-      localStorage.clear();
-      sessionStorage.clear();
+    } catch (e) {
+      // Only remove the specific key that failed — don't nuke all storage
+      console.warn('[AppContext] Failed to parse saved data, clearing corrupt key:', e);
+      localStorage.removeItem('humble_safe_user_data');
+      sessionStorage.removeItem('humble_vibe_check_completed');
     } finally {
       setIsLoading(false);
     }
@@ -73,16 +75,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem('humble_vibe_check_completed', 'true');
     setVibeCheckCompleted(true);
 
-    const risk = report.severityScore >= 7 ? 'high' : 'low';
+    // Extract only the severity level — NEVER persist full clinical report client-side
+    const severityStr = typeof report === 'string' ? report : (report?.severity || 'unknown');
+    const risk = ['severe', 'moderate'].includes(severityStr.toLowerCase()) ? 'high' : 'low';
     setRiskLevel(risk);
 
     setUserData((prev) => {
       const updated: UserData = {
         ...(prev as UserData),
-        lastAssessment: report,
+        // Store only risk level, not the full assessment report
         riskLevel: risk,
         lastCheck: new Date().toISOString(),
       };
+      // Only safe, non-PHI data persisted
       const safeData = { name: updated.name, id: updated.id };
       localStorage.setItem('humble_safe_user_data', JSON.stringify(safeData));
       return updated;
@@ -90,8 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const resetApp = useCallback(() => {
-    localStorage.clear();
-    sessionStorage.clear();
+    localStorage.removeItem('humble_safe_user_data');
+    sessionStorage.removeItem('humble_vibe_check_completed');
     setIsOnboarded(false);
     setUserData(null);
     setVibeCheckCompleted(false);
