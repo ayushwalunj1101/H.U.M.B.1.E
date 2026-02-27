@@ -42,9 +42,9 @@ export function useConversation() {
 
   /**
    * Send a query to the RAG backend and handle the response.
-   * Returns the spoken answer for the avatar to speak.
+   * If speak=true, it triggers the avatar to speak the response.
    */
-  const sendQuery = useCallback(async (query: string): Promise<string | null> => {
+  const sendQuery = useCallback(async (query: string, speak: boolean = false): Promise<string | null> => {
     setData((prev) => ({
       ...prev,
       state: 'processing',
@@ -59,7 +59,7 @@ export function useConversation() {
         { role: 'user', content: query },
       ];
 
-      const result = await queryRAG(query, updatedHistory);
+      const result = await queryRAG(query, updatedHistory, speak);
 
       // Add assistant response to history
       const finalHistory: Message[] = [
