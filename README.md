@@ -1,198 +1,274 @@
-# P.O.V - Mental Health Support Platform
+﻿# H.U.M.B.1.E — Voice-First Mental Health AI Platform
 
-A compassionate AI-powered mental health therapy platform that provides personalized support through conversational therapy, clinical assessments, and immersive voice interactions.
+An AI-powered mental health therapy platform delivering support through a HeyGen streaming avatar, full-duplex voice therapy, clinical assessments, and a RAG-augmented clinical knowledge base.
 
-## 🌟 Features
+---
 
-### 💬 Interactive Chat
-- Real-time conversational therapy with AI assistance
-- Voice input/output support (Speech-to-Text & Text-to-Speech)
-- Dynamic orb visualization responding to voice levels
-- Message history with source citations
-- Council analysis for depression, anxiety, and crisis detection
+## Architecture Overview
 
-### 📋 Clinical Assessment (PHQ-9)
-- Validated Patient Health Questionnaire-9 for depression screening
-- Clinical severity scoring (0-27 scale)
-- Risk level classification and suicidal ideation detection
-- Personalized recommendations and crisis resources
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        H.U.M.B.1.E                          │
+├─────────────────┬───────────────────┬───────────────────────┤
+│  avatar-frontend│    frontend/      │   backend-unified/    │
+│  (Next.js 14)   │  (React / CRA)    │   (FastAPI)           │
+│  HeyGen Avatar  │  Chat + PHQ-9 +   │   RAG · Voice WS ·   │
+│  + RAG voice    │  Immersive Mode   │   HeyGen token ·      │
+│  Port 3000      │  Port 3001        │   Journal · Memory    │
+└─────────────────┴───────────────────┴───────────────────────┘
+                              │
+        ┌─────────────────────┼──────────────────────┐
+        ▼                     ▼                      ▼
+   Groq (Llama-3)      Google Gemini          HeyGen API
+   RAG + Voice LLM     Embeddings + Senses    Streaming Avatar
+        │                                           │
+        ▼                                           ▼
+   Deepgram API                             MongoDB Atlas
+   ASR (Nova-2) + TTS (Aura)               Conversation Memory
+```
 
-### 🎙️ Immersive Mode
-- Full-screen voice therapy experience
-- Hands-free interaction with auto-pause detection
-- Session time tracking
-- Real-time audio visualization with animated orb
+---
 
-### 🛡️ Safety Features
-- Crisis detection and immediate resource provision
-- Hardcoded safety overrides for high-risk situations
-- Tele-MANAS (14416) and Connecting Trust integration
+## Features
 
-## 🏗️ Architecture
+### HeyGen Streaming Avatar (`avatar-frontend/`)
+- Photo-realistic AI avatar driven by HeyGen's WebRTC streaming SDK
+- Voice-activated — user speaks, avatar responds via RAG backend
+- Real-time citations panel showing clinical source documents
+- Multi-agent council badge (primary state · recommended modality)
+- Production-grade error handling: auth failures, network drops, browser autoplay blocks
 
-### Frontend (React)
-- **Framework**: React 18 with Hooks
-- **Routing**: React Router
-- **Animations**: Framer Motion
-- **Voice**: Web Speech API (SpeechRecognition & SpeechSynthesis)
-- **Audio**: Custom audio level visualization
+### Chat + Clinical Tools (`frontend/`)
+- Conversational therapy with RAG-backed responses
+- PHQ-9 clinical depression screening with severity scoring
+- Crisis detection with hardcoded safety overrides (Tele-MANAS / Connecting Trust)
+- Immersive full-screen voice mode with animated orb visualisation
+- Assessment report generation
 
-### Backend (Python/FastAPI)
-- **Framework**: FastAPI
-- **LLM**: Llama 3.3 70B via Groq
-- **RAG**: LangChain with FAISS vector store
-- **Orchestration**: LangGraph for conversation flow
-- **Clinical Analysis**: Multi-agent council system
+### Unified Backend (`backend-unified/`)
+- **RAG pipeline** — FAISS retrieval → multi-agent council → Llama-3.3-70B generation
+- **WebSocket voice** — full-duplex audio: Deepgram ASR → Llama-3.1-8B → Deepgram TTS
+- **HeyGen token proxy** — keeps `HEYGEN_API_KEY` server-side
+- **Journal upload** — PDF ingestion and analysis per user
+- **MongoDB memory** — persistent vector-searched emotional memory (768-dim, Motor async)
 
-## 🚀 Getting Started
+---
 
-### Prerequisites
-- Python 3.9+
-- Node.js 16+
-- Groq API key
+## Tech Stack
 
-### Backend Setup
+| Layer | Technology |
+|---|---|
+| Avatar frontend | Next.js 14, TypeScript, `@heygen/streaming-avatar` v2 |
+| Chat frontend | React 18, React Router 6, Framer Motion, Web Speech API |
+| Backend framework | FastAPI 0.115, Uvicorn, Pydantic v2 |
+| RAG LLM | Groq · Llama-3.3-70B-Versatile |
+| Voice LLM | Groq · Llama-3.1-8B-Instant |
+| Embeddings | Google Gemini (`google-genai`) |
+| Senses / affect | Google Gemini (`senses_service`) |
+| Vector store | FAISS (CPU) |
+| ASR | Deepgram Nova-2 |
+| TTS | Deepgram Aura (`aura-asteria-en`) |
+| Avatar streaming | HeyGen Streaming API v1 |
+| Memory / persistence | MongoDB Atlas (Motor async driver) |
+| Conversation graph | LangGraph 0.2+ |
+
+---
+
+## Prerequisites
+
+- Python **3.10+**
+- Node.js **18+**
+- API keys for: **Groq**, **Google Gemini**, **HeyGen**, **Deepgram**
+- MongoDB Atlas URI (optional — memory features degrade gracefully when absent)
+
+---
+
+## Environment Variables
+
+Create `backend-unified/.env`:
+
+```env
+# Required
+GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=AIza...
+HEYGEN_API_KEY=...
+DEEPGRAM_API_KEY=...
+
+# Optional (memory features)
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/solace
+
+# Optional (defaults shown)
+CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+TTS_VOICE=aura-asteria-en
+```
+
+---
+
+## Setup & Running
+
+### 1. Backend
 
 ```bash
-cd backend
+cd backend-unified
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Set up environment variables
-# Create .env file with:
-GROQ_API_KEY=your_groq_api_key_here
+# Add your .env (see section above)
 
-# Download embedding model (first time only)
-python download_model.py
-
-# Build vector store from therapy documents
-python vectorstore.py
+# Place therapy PDFs in data/books/ — the RAG pipeline indexes them at startup
 
 # Start the server
-python app.py
+python main.py
+# or: uvicorn main:app --reload --port 8000
 ```
 
 Backend runs on `http://localhost:8000`
+Interactive docs: `http://localhost:8000/docs`
 
-### Frontend Setup
+### 2. Avatar Frontend (Next.js)
+
+```bash
+cd avatar-frontend
+
+npm install
+npm run dev
+```
+
+Runs on `http://localhost:3000`
+
+### 3. Chat / Clinical Frontend (React CRA)
 
 ```bash
 cd frontend
 
-# Install dependencies
 npm install
-
-# Start development server
 npm start
 ```
 
-Frontend runs on `http://localhost:3000`
+Runs on `http://localhost:3001`
+*(If both frontends run simultaneously, configure `PORT=3001` for the CRA app or adjust your dev proxy.)*
 
-## 📁 Project Structure
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/rag` | RAG query — returns `spoken_answer`, `citations`, `council` |
+| `POST` | `/api/get-access-token` | HeyGen streaming token (proxied, API key stays server-side) |
+| `WS` | `/ws/voice/{user_id}` | Full-duplex voice: PCM audio in → TTS audio out |
+| `POST` | `/api/journal/upload/{user_id}` | Upload and analyse a journal PDF |
+| `GET` | `/health` | Health check |
+
+### WebSocket Voice Auth
+Pass `?token=<jwt>` as a query parameter when connecting to `/ws/voice/{user_id}`.
+Replace the placeholder token check in `routers/voice_ws.py` with real JWT verification before deploying to production.
+
+---
+
+## Project Structure
 
 ```
 doc-test/
-├── backend/
-│   ├── app.py              # FastAPI server
-│   ├── graph.py            # LangGraph workflow
-│   ├── council.py          # Multi-agent analysis
-│   ├── rag.py              # RAG generation
-│   ├── vectorstore.py      # FAISS vector store
-│   ├── chunking.py         # Document processing
-│   ├── requirements.txt    # Python dependencies
-│   ├── prompts/            # System prompts
-│   └── data/books/         # Therapy documents
+├── backend-unified/
+│   ├── main.py                  # FastAPI app + lifespan startup
+│   ├── config.py                # All env vars and tunable parameters
+│   ├── session.py               # Per-user session context
+│   ├── turn_manager.py          # Turn-based conversation management
+│   ├── requirements.txt
+│   ├── agents/
+│   │   └── therapist_graph.py   # LangGraph multi-agent council
+│   ├── audio/
+│   │   ├── asr_streamer.py      # Deepgram Nova-2 streaming ASR
+│   │   └── tts_streamer.py      # Deepgram Aura streaming TTS
+│   ├── rag/
+│   │   ├── pipeline.py          # End-to-end RAG orchestration
+│   │   ├── retrieval.py         # FAISS retrieval
+│   │   ├── generation.py        # LLM response generation
+│   │   ├── council.py           # Multi-perspective clinical analysis
+│   │   └── citation_formatter.py
+│   ├── routers/
+│   │   ├── rag_router.py        # POST /api/rag
+│   │   ├── heygen_router.py     # POST /api/get-access-token
+│   │   ├── voice_ws.py          # WS  /ws/voice/{user_id}
+│   │   └── journal.py           # POST /api/journal/upload
+│   ├── services/
+│   │   ├── singletons.py        # Groq + MongoDB client pool
+│   │   ├── embedding_service.py # Gemini embeddings
+│   │   ├── memory_service.py    # MongoDB vector memory
+│   │   └── senses_service.py    # Gemini affect / senses
+│   ├── prompts/
+│   │   ├── therapist_system.txt
+│   │   └── voice_therapy_prompt.txt
+│   └── data/books/              # Therapy PDFs for RAG indexing
 │
-└── frontend/
-    ├── src/
-    │   ├── App.jsx         # Main application
-    │   ├── Chat.jsx        # Chat interface
-    │   ├── ImmersiveMode.jsx    # Voice therapy
-    │   ├── Assessment.jsx  # PHQ-9 assessment
-    │   ├── Report.jsx      # Assessment results
-    │   ├── components/     # Reusable components
-    │   └── hooks/          # Custom React hooks
-    └── public/
+├── avatar-frontend/             # Next.js 14 + TypeScript
+│   └── src/
+│       ├── app/                 # Next.js app router
+│       ├── components/
+│       │   ├── AvatarSession.tsx    # HeyGen avatar lifecycle + error handling
+│       │   ├── CitationsPanel.tsx   # RAG source citations
+│       │   └── VoiceStatus.tsx      # Voice state indicator
+│       ├── hooks/
+│       │   └── useConversation.ts   # Conversation state + error handling
+│       └── lib/
+│           └── rag-client.ts        # Backend API client
+│
+└── frontend/                    # React 18 CRA
+    └── src/
+        ├── App.jsx
+        ├── Chat.jsx             # RAG chat interface
+        ├── Assessment.jsx       # PHQ-9 questionnaire
+        ├── Report.jsx           # Assessment results
+        ├── ImmersiveMode.jsx    # Full-screen voice mode
+        ├── OnboardingFlow.jsx
+        ├── WelcomePage.jsx
+        ├── components/
+        │   ├── Iridescence.jsx
+        │   └── JarvisOrb.jsx
+        └── hooks/
+            ├── useAudioLevel.js
+            ├── useAudioVisualizer.js
+            ├── useSpeechRecognition.js
+            └── useSpeechSynthesis.js
 ```
 
-## 🔧 Configuration
+---
 
-### Backend Environment Variables
-- `GROQ_API_KEY`: Your Groq API key for LLM access
+## Council Analysis System
 
-### Vector Store
-Place therapy documents in `backend/data/books/` and run:
-```bash
-python vectorstore.py
-```
+Every RAG query passes through a multi-agent council that returns:
 
-## 🎯 Key Components
+| Field | Values |
+|---|---|
+| `primary_state` | `depression`, `anxiety`, `stress`, `neutral` |
+| `severity` | `mild`, `moderate`, `severe` |
+| `crisis_risk` | `low`, `medium`, `high` |
+| `recommended_modality` | `CBT`, `mindfulness`, `crisis_intervention` |
 
-### Council Analysis System
-Multi-perspective mental health analysis:
-- **Primary State**: Depression, anxiety, stress, neutral
-- **Severity**: Mild, moderate, severe
-- **Crisis Risk**: Low, medium, high
-- **Recommended Modality**: CBT, mindfulness, crisis intervention
+High-risk inputs bypass the RAG pipeline entirely and return hardcoded crisis resources.
 
-### RAG Pipeline
-1. User input → Council analysis
-2. Retrieve relevant therapy documents
-3. Generate contextual response with LLM
-4. Refine output (60-100 words)
-5. Return with sources and council data
+---
 
-### Safety Override
-High-risk inputs bypass normal flow and immediately provide crisis resources.
+## Safety & Crisis Resources
 
-## 🔒 Privacy & Data
+H.U.M.B.1.E is **not** a replacement for professional therapy.
+In crisis situations the platform surfaces:
 
-- Chat history stored locally (localStorage)
-- No server-side persistence
-- Assessment data stays on client
-- Delete chat option available
-
-## 🎨 UI/UX Features
-
-- Glassmorphism design
-- Smooth animations with Framer Motion
-- Responsive mobile-first layout
-- Dark theme optimized for focus
-- Accessibility-friendly voice controls
-
-## 📊 Clinical Validation
-
-- PHQ-9: Validated depression screening tool
-- Evidence-based therapy techniques (CBT, mindfulness)
-- Structured response format for clinical safety
-
-## ⚠️ Disclaimer
-
-P.O.V is an AI-assisted mental health support tool. It is **NOT** a replacement for professional therapy. In crisis situations, always contact:
-- **Tele-MANAS**: 14416 (24/7, Free)
+- **Tele-MANAS**: 14416 (24/7 · Free · India)
 - **Connecting Trust** (Pune): 9922001122
-- Emergency services: 112
+- **Emergency services**: 112
 
-## 🛠️ Tech Stack
+---
 
-**Frontend:**
-- React, React Router, Framer Motion
-- Web Speech API
-- Canvas API for visualizations
+## License
 
-**Backend:**
-- FastAPI, LangChain, LangGraph
-- FAISS, HuggingFace Embeddings
-- Groq (Llama 3.3 70B)
-
-## 📝 License
-
-This project is for educational and non-commercial use.
-
-## 🤝 Contributing
-
-This is a therapy application - contributions should prioritize clinical safety and user wellbeing.
+Educational and non-commercial use only.
 
 ---
 

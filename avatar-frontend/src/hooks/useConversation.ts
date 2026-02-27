@@ -36,6 +36,10 @@ export function useConversation() {
     setData((prev) => ({ ...prev, error: null }));
   }, []);
 
+  const setError = useCallback((message: string) => {
+    setData((prev) => ({ ...prev, error: message, state: 'idle' }));
+  }, []);
+
   /**
    * Send a query to the RAG backend and handle the response.
    * Returns the spoken answer for the avatar to speak.
@@ -74,8 +78,19 @@ export function useConversation() {
 
       return result.spoken_answer;
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+      let errorMessage = 'Something went wrong. Please try again.';
+
+      if (err instanceof Error) {
+        if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+          errorMessage = "I'm having trouble connecting to the server. Please check your internet connection.";
+        } else if (err.message.toLowerCase().includes('timeout')) {
+          errorMessage = "The server is taking too long to respond. Let's try that again.";
+        } else {
+          // Avoid leaking obscure parser errors or backend stack traces
+          console.error('[RAG Query Error]:', err.message);
+          errorMessage = "I couldn't process that request right now. Could you rephrase?";
+        }
+      }
 
       setData((prev) => ({
         ...prev,
@@ -104,6 +119,7 @@ export function useConversation() {
     setState,
     sendQuery,
     clearError,
+    setError,
     resetConversation,
   };
 }

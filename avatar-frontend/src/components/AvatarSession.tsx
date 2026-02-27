@@ -26,6 +26,7 @@ export default function AvatarSession() {
   const [voiceId, setVoiceId] = useState<string>('');
   const [isInitializing, setIsInitializing] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [needsInteraction, setNeedsInteraction] = useState(false);
 
   const {
     state,
@@ -35,6 +36,7 @@ export default function AvatarSession() {
     error,
     sendQuery,
     clearError,
+    setError,
     resetConversation,
   } = useConversation();
 
@@ -60,10 +62,19 @@ export default function AvatarSession() {
       avatarRef.current = avatar;
 
       // 3. Set up event listeners
-      avatar.on(StreamingEvents.STREAM_READY, (event: any) => {
+      avatar.on(StreamingEvents.STREAM_READY, async (event: any) => {
         if (videoRef.current && event.detail) {
           videoRef.current.srcObject = event.detail;
-          videoRef.current.play().catch(() => {});
+          try {
+            await videoRef.current.play();
+          } catch (playError) {
+            if (playError instanceof DOMException && playError.name === 'NotAllowedError') {
+              // Browser autoplay policy blocked playback — ask the user to interact
+              setNeedsInteraction(true);
+            } else {
+              console.error('[AvatarService] Video playback failed:', playError);
+            }
+          }
         }
         setIsInitialized(true);
         setIsInitializing(false);
@@ -114,7 +125,9 @@ export default function AvatarSession() {
               text: FALLBACK_MESSAGE,
               taskType: TaskType.REPEAT,
             });
-          } catch {
+          } catch (speakError) {
+            console.error('[AvatarService] Failed to trigger fallback speech:', speakError);
+            setError('Lost connection to the avatar stream. Please try again.');
             setState('idle');
           }
         }
@@ -148,11 +161,25 @@ export default function AvatarSession() {
       await avatar.startSession();
       console.log("Avatar stream established.");
 
-    } catch (err: any) {
-      // Extensive logging to extract the exact API reason
-      console.error('Avatar initialization error full object:', err);
-      const apiReason = err?.response?.data || err?.message || err?.toString() || 'Failed to start avatar. 400 Bad Request.';
-      setInitError(typeof apiReason === 'string' ? apiReason : JSON.stringify(apiReason));
+    } catch (err: unknown) {
+      console.error('[AvatarService] Initialization failed:', err); // Forward to Sentry/Datadog in production
+
+      let userFriendlyError = 'Failed to connect to the avatar service. Please try again.';
+
+      if (err instanceof Error) {
+        if (err.message.includes('401') || err.message.toLowerCase().includes('token')) {
+          userFriendlyError = 'Authentication failed. Please check your API keys.';
+        } else if (err.message.includes('Network') || err.message.includes('fetch')) {
+          userFriendlyError = 'Network connection lost. Please check your internet.';
+        } else if (
+          err.message.toLowerCase().includes('not found') ||
+          err.message.toLowerCase().includes('invalid avatar')
+        ) {
+          userFriendlyError = 'The provided Avatar ID is invalid or unavailable.';
+        }
+      }
+
+      setInitError(userFriendlyError);
       setIsInitializing(false);
     }
   }, [isInitializing, isInitialized, avatarId, voiceId, setState, sendQuery]);
@@ -192,6 +219,21 @@ export default function AvatarSession() {
           playsInline
           className="avatar-video"
         />
+
+        {/* Autoplay interaction overlay — shown when the browser blocks autoplay */}
+        {needsInteraction && (
+          <div
+            className="autoplay-overlay"
+            onClick={() => {
+              videoRef.current?.play().catch(() => {});
+              setNeedsInteraction(false);
+            }}
+          >
+            <div className="autoplay-overlay-inner">
+              <p>▶ Click anywhere to enable audio &amp; video</p>
+            </div>
+          </div>
+        )}
 
         {!isInitialized && (
           <div className="avatar-placeholder">
@@ -314,6 +356,32 @@ export default function AvatarSession() {
           width: 100%;
           height: 100%;
           object-fit: cover;
+        }
+
+        .autoplay-overlay {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.65);
+          cursor: pointer;
+          z-index: 10;
+        }
+
+        .autoplay-overlay-inner {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+          color: #e2e8f0;
+          font-size: 18px;
+          font-weight: 600;
+          text-align: center;
+          padding: 24px 32px;
+          border-radius: 16px;
+          border: 1px solid rgba(99, 102, 241, 0.5);
+          background: rgba(15, 15, 26, 0.9);
         }
 
         .avatar-placeholder {

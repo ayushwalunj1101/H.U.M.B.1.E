@@ -1,9 +1,11 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './frontend.css';
+import { AppProvider } from '@/context/AppContext';
 
 export const metadata: Metadata = {
-  title: 'Voice RAG Avatar — Clinical Therapy Agent',
-  description: 'Voice-first AI therapy agent powered by RAG and HeyGen Interactive Avatar',
+  title: 'H.U.M.B.1.E — Voice-First Mental Health AI',
+  description: 'Voice-first AI therapy agent powered by RAG, HeyGen avatar, and clinical assessments',
 };
 
 export default function RootLayout({
@@ -15,11 +17,13 @@ export default function RootLayout({
     <html lang="en">
       <head>
         <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <AppProvider>{children}</AppProvider>
+      </body>
     </html>
   );
 }
