@@ -1,16 +1,17 @@
 /**
- * AvatarSession — LiveAvatar SDK + RAG-powered voice interaction.
- * - Avatar: Rendered via @heygen/liveavatar-web-sdk (LITE mode)
+ * AvatarSession — Embed Iframe + RAG-powered voice interaction.
+ * - Avatar: Rendered via simple iframe embed
  * - RAG Mic button: captures speech → backend `/api/rag-speak` → speaks clinical response aloud
+ * - Text Chat: same RAG pipeline via typing
  */
 'use client';
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { LiveAvatarSession } from '@heygen/liveavatar-web-sdk';
-import { getAccessToken } from '@/lib/rag-client';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useConversation } from '@/hooks/useConversation';
 import CitationsPanel from '@/components/CitationsPanel';
 import VoiceStatus from '@/components/VoiceStatus';
+
+const EMBED_URL = 'https://embed.liveavatar.com/v1/3b78f84a-fab6-4591-9baa-f2ebfecf9f7a';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -18,25 +19,17 @@ interface ChatMessage {
 }
 
 export default function AvatarSession() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const sessionRef = useRef<LiveAvatarSession | null>(null);
-  
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(false);
-  const [initError, setInitError] = useState<string | null>(null);
-
+  const [isStarted, setIsStarted] = useState(false);
   const [textInput, setTextInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  
   const [isListening, setIsListening] = useState(false);
+  
   const recognitionRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const {
     state,
-    setState,
     citations,
     council,
     error,
@@ -52,68 +45,17 @@ export default function AvatarSession() {
   }, [chatMessages]);
 
   /**
-   * Initialize the LiveAvatar session (LITE mode).
-   */
-  const initializeAvatar = useCallback(async () => {
-    if (isInitializing || isInitialized) return;
-    
-    setIsInitializing(true);
-    setInitError(null);
-
-    try {
-      // 1. Fetch LiveAvatar session token from backend
-      const tokenData = await getAccessToken();
-      console.log('[LiveAvatar] Session token received');
-
-      // 2. Create LiveAvatar session
-      const session = new LiveAvatarSession(tokenData, {
-        voiceChat: false,
-      });
-      sessionRef.current = session;
-
-      // 3. Start the session
-      await session.start();
-      console.log('[LiveAvatar] Session started successfully');
-
-      // 4. Attach the WebRTC stream to our video element
-      if (videoRef.current) {
-        session.attach(videoRef.current);
-        console.log('[LiveAvatar] Stream attached to video element');
-      }
-
-      setIsInitialized(true);
-      setIsInitializing(false);
-
-    } catch (err: unknown) {
-      console.error('[LiveAvatar] Initialization failed:', err);
-      let userFriendlyError = 'Failed to connect to the avatar service. Please try again.';
-
-      if (err instanceof Error) {
-        if (err.message.includes('401') || err.message.toLowerCase().includes('token')) {
-          userFriendlyError = 'Authentication failed. Please check your API keys.';
-        } else if (err.message.includes('Network') || err.message.includes('fetch')) {
-          userFriendlyError = 'Network connection lost. Please check your internet.';
-        }
-      }
-
-      setInitError(userFriendlyError);
-      setIsInitializing(false);
-    }
-  }, [isInitializing, isInitialized]);
-
-
-  /**
    * Process a message through the RAG pipeline
-   * We pass speak=true to sendQuery so the backend directly tells LiveAvatar API to speak the response!
+   * We pass speak=true to sendQuery so the backend tells LiveAvatar API to speak the response!
    */
   const processMessage = useCallback(async (text: string) => {
-    if (!text.trim() || isSending || !isInitialized) return;
+    if (!text.trim() || isSending) return;
 
     setIsSending(true);
     setChatMessages(prev => [...prev, { role: 'user', content: text }]);
 
     try {
-      // The backend will query RAG, then automatically call LiveAvatar API to make the avatar speak!
+      // The backend queries RAG, then automatically calls LiveAvatar API to make the avatar speak
       const answer = await sendQuery(text, true);
 
       if (answer) {
@@ -128,7 +70,7 @@ export default function AvatarSession() {
     } finally {
       setIsSending(false);
     }
-  }, [isSending, isInitialized, sendQuery]);
+  }, [isSending, sendQuery]);
 
   /**
    * Toggle microphone — uses Web Speech API to capture user's voice,
@@ -175,7 +117,6 @@ export default function AvatarSession() {
     recognition.start();
   }, [isListening, processMessage, setError]);
 
-
   const handleSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (textInput.trim()) {
@@ -184,70 +125,55 @@ export default function AvatarSession() {
     }
   }, [textInput, processMessage]);
 
-
-  const endSession = useCallback(async () => {
-    if (sessionRef.current) {
-      await sessionRef.current.stop();
-      sessionRef.current = null;
-    }
-    setIsInitialized(false);
+  const startSession = useCallback(() => setIsStarted(true), []);
+  
+  const endSession = useCallback(() => {
+    setIsStarted(false);
     setChatMessages([]);
     resetConversation();
   }, [resetConversation]);
 
+  // Clean up mic on unmount
   useEffect(() => {
     return () => {
-      if (sessionRef.current) {
-        sessionRef.current.stop().catch(() => {});
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
       }
     };
   }, []);
 
   return (
     <div className="avatar-session">
-      {/* Avatar Container uses the LiveAvatar web SDK injected rendering stream! */}
-      <div className="avatar-video-container" ref={containerRef}>
-        {/* The actual video element the SDK will attach the stream to */}
-        <video 
-          ref={videoRef} 
-          autoPlay 
-          playsInline 
-          className="avatar-video"
-        />
-
-        {!isInitialized && (
+      {/* Avatar Embed */}
+      <div className="avatar-video-container">
+        {isStarted ? (
+          <iframe
+            src={EMBED_URL}
+            allow="microphone; camera"
+            title="LiveAvatar Therapist"
+            className="avatar-embed"
+          />
+        ) : (
           <div className="avatar-placeholder">
-            {isInitializing ? (
-              <>
-                <div className="loading-spinner" />
-                <p>Initializing avatar...</p>
-              </>
-            ) : initError ? (
-              <>
-                <p className="error-text">{initError}</p>
-                <button onClick={initializeAvatar} className="btn-retry">
-                  Retry
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="avatar-icon">🎙️</div>
-                <h2>H.U.M.B.L.E Therapist</h2>
-                <p>Talk naturally — the avatar will respond using the clinical RAG pipeline.</p>
-                <button onClick={initializeAvatar} className="btn-start">
-                  Start Session
-                </button>
-              </>
-            )}
+            <div className="avatar-icon">🎙️</div>
+            <h2>H.U.M.B.L.E Therapist</h2>
+            <p>Talk naturally — your AI therapist responds with clinical knowledge from the RAG pipeline.</p>
+            <button onClick={startSession} className="btn-start">
+              Start Session
+            </button>
           </div>
         )}
+      </div>
 
-        {/* Overlay Mic Button right on top of the Avatar when initialized */}
-        {isInitialized && (
-          <div className="integrated-mic-overlay">
+      {/* Status Bar */}
+      {isStarted && (
+         <div className="status-bar">
+          <VoiceStatus state={state} />
+          
+          <div className="rag-mic-controls">
             <button 
               onClick={toggleMic} 
-              className={`integrated-mic-btn ${isListening ? 'listening' : ''}`}
+              className={`btn-rag-mic ${isListening ? 'listening' : ''}`}
               title="Click to talk via RAG"
               disabled={isSending}
             >
@@ -255,28 +181,23 @@ export default function AvatarSession() {
                 {isListening ? (
                   <span className="recording-dot"></span>
                 ) : (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                     <line x1="12" y1="19" x2="12" y2="22"/>
                   </svg>
                 )}
+                <span>{isListening ? 'Listening...' : 'Ask RAG via Voice'}</span>
               </div>
             </button>
           </div>
-        )}
-      </div>
 
-      {isInitialized && (
-         <div className="status-bar">
-          <VoiceStatus state={state} />
           <button onClick={endSession} className="btn-end">End Session</button>
          </div>
       )}
 
-
       {/* Text Chat Panel */}
-      {isInitialized && (
+      {isStarted && (
         <div className="chat-panel">
           <div className="chat-header">
             <span className="chat-title">💬 Clinical Text Chat</span>
@@ -285,7 +206,7 @@ export default function AvatarSession() {
           <div className="chat-messages">
             {chatMessages.length === 0 && (
               <div className="chat-empty">
-                Use the mic button on the avatar, or type below.
+                Use the "Ask RAG via Voice" button, or type below.
               </div>
             )}
             {chatMessages.map((msg, i) => (
@@ -320,10 +241,10 @@ export default function AvatarSession() {
       )}
 
       {/* Citations Panel */}
-      <CitationsPanel citations={citations} visible={isInitialized && citations.length > 0} />
+      <CitationsPanel citations={citations} visible={isStarted && citations.length > 0} />
 
       {/* Council Badge */}
-      {council && isInitialized && (
+      {council && isStarted && (
         <div className="council-badge">
           <span className={`council-state ${council.primary_state.toLowerCase()}`}>
             {council.primary_state}
@@ -356,7 +277,7 @@ export default function AvatarSession() {
           position: relative;
           width: 100%;
           aspect-ratio: 16 / 9;
-          max-height: 420px;
+          max-height: 480px;
           border-radius: 20px;
           overflow: hidden;
           background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
@@ -364,73 +285,63 @@ export default function AvatarSession() {
           box-shadow: 0 0 40px rgba(99, 102, 241, 0.1);
         }
 
-        .avatar-video {
+        .avatar-embed {
           width: 100%;
           height: 100%;
-          object-fit: cover;
-          display: block;
+          border: none;
         }
 
-        /* The LiveKit SDK injects Video tags globally. We use absolute positioning inside it. */
-        .avatar-video-container :global(video) {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-        }
-
-        .integrated-mic-overlay {
-          position: absolute;
-          bottom: 24px;
-          left: 50%;
-          transform: translateX(-50%);
-          z-index: 10;
-        }
-
-        .integrated-mic-btn {
-          width: 56px;
-          height: 56px;
-          border-radius: 50%;
-          border: 2px solid rgba(255, 255, 255, 0.2);
-          background: rgba(15, 15, 26, 0.6);
-          backdrop-filter: blur(10px);
-          color: white;
-          cursor: pointer;
+        .rag-mic-controls {
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
         }
 
-        .integrated-mic-btn:hover:not(:disabled) {
-          transform: scale(1.1);
-          background: rgba(99, 102, 241, 0.8);
-          border-color: rgba(255, 255, 255, 0.4);
+        .btn-rag-mic {
+          padding: 10px 20px;
+          border-radius: 50px;
+          border: 1px solid rgba(99, 102, 241, 0.4);
+          background: rgba(99, 102, 241, 0.1);
+          color: #c4b5fd;
+          font-weight: 600;
+          font-size: 14px;
+          cursor: pointer;
+          transition: all 0.2s ease;
         }
 
-        .integrated-mic-btn.listening {
-          background: rgba(239, 68, 68, 0.9);
-          border-color: #fca5a5;
-          animation: micPulse 1.5s infinite;
+        .btn-rag-mic:hover:not(:disabled) {
+          background: rgba(99, 102, 241, 0.2);
+          transform: translateY(-1px);
         }
-        
-        .integrated-mic-btn:disabled {
-           opacity: 0.6;
-           cursor: not-allowed;
-           transform: scale(0.95);
+
+        .btn-rag-mic.listening {
+          background: rgba(239, 68, 68, 0.15);
+          border-color: #ef4444;
+          color: #fca5a5;
+          animation: pulse 1.5s ease infinite;
+        }
+
+        .btn-rag-mic:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .mic-icon-wrapper {
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
 
         .recording-dot {
-          width: 16px;
-          height: 16px;
-          background: white;
-          border-radius: 4px;
+          width: 10px;
+          height: 10px;
+          background: #ef4444;
+          border-radius: 50%;
         }
 
-        @keyframes micPulse {
-          0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-          70% { box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        @keyframes pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+          50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
         }
 
         .avatar-placeholder {
@@ -534,7 +445,7 @@ export default function AvatarSession() {
 
         .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        .btn-start, .btn-retry {
+        .btn-start {
           padding: 12px 32px; border: none; border-radius: 12px;
           font-size: 16px; font-weight: 600; cursor: pointer;
           background: linear-gradient(135deg, #6366f1, #8b5cf6);
